@@ -1,0 +1,30 @@
+{
+  "name": "aviator-server",
+  "version": "1.0.0",
+  "description": "Aviator WebSocket server - theo dõi phiên nổ máy bay",
+  "main": "aviator.js",
+  "scripts": {
+    "start": "node aviator.js",
+    "dev": "nodemon aviator.js"
+  },
+  "keywords": [
+    "aviator",
+    "websocket",
+    "minigame",
+    "b52"
+  ],
+  "author": "hknamvip",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.8",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
