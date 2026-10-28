@@ -17,70 +17,82 @@ let logged_results = {};
 let last_odd_time = {};        
 let keep_alive_count = 1;
 
+// Quản lý WebSocket
 let ws = null;
 let reconnectTimeout = null;
 let isConnecting = false;
+let isAuthenticated = false; // Cờ xác nhận đã đăng nhập thành công
+let reconnectAttempts = 0;   // Đếm số lần thử lại
+
+// Hàm hỗ trợ delay
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // 🔁 Hàm kết nối WebSocket
 function connectWebSocket() {
   if (isConnecting) return;
   isConnecting = true;
+  isAuthenticated = false; // Reset cờ xác thực mỗi lần kết nối
 
-  console.log(`🔄 [${new Date().toLocaleTimeString()}] Đang kết nối tới WebSocket...`);
+  console.log(`\n🔄 [${new Date().toLocaleTimeString()}] Đang kết nối tới WebSocket... (Lần thử: ${reconnectAttempts + 1})`);
   
-  // Khởi tạo kết nối với header giả lập trình duyệt
+  // Thêm Header giả lập trình duyệt để lừa server B52
   ws = new WebSocket(URL, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Origin": "https://b52.vin"
+      "Origin": "https://b52.vin",
+      "Referer": "https://b52.vin/",
+      "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+      "Pragma": "no-cache",
+      "Cache-Control": "no-cache"
     },
-    handshakeTimeout: 15000 // Tăng timeout lên 15s
+    handshakeTimeout: 15000
   });
 
-  ws.on("open", () => {
+  ws.on("open", async () => {
     isConnecting = false;
-    console.log("[✅] WebSocket đã kết nối thành công");
+    console.log("[✅] WebSocket đã kết nối thành công. Đang chờ 1s...");
+    
+    // Chờ 1 giây cho ổn định mạng
+    await sleep(1000);
+    if (ws.readyState !== WebSocket.OPEN) return;
 
-    // SỬA LỖI 1: Delay 500ms trước khi gửi gói tin đầu tiên để tránh bị block
-    setTimeout(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      
-      console.log("📤 Gửi gói xác thực (Auth)...");
-      try {
-        ws.send(JSON.stringify([
-          1, "MiniGame", "", "", {
-            agentId: "1",
-            accessToken: "13-512bfa8983978c7d8d483a35b384ec8e",
-            reconnect: false
-          }
-        ]));
-      } catch (e) {
-        console.log("❌ Lỗi gửi Auth:", e.message);
-      }
+    // Gửi gói xác thực
+    console.log("📤 Gửi gói xác thực (Auth)...");
+    try {
+      ws.send(JSON.stringify([
+        1, "MiniGame", "", "", {
+          agentId: "1",
+          accessToken: "13-512bfa8983978c7d8d483a35b384ec8e",
+          reconnect: false
+        }
+      ]));
+    } catch (e) {
+      console.log("❌ Lỗi gửi Auth:", e.message);
+    }
 
-      // SỬA LỖI 2: Delay giãn cách các gói tin ra (1.5s, 3s, 4.5s) thay vì dồn dập
-      setTimeout(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          console.log("📤 Gửi gói LobbyPlugin...");
-          ws.send(JSON.stringify([6, "MiniGame", "lobbyPlugin", { cmd: 10002 }]));
-        }
-      }, 1500);
-      
-      setTimeout(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          console.log("📤 Gửi gói AviatorPlugin...");
-          ws.send(JSON.stringify([6, "MiniGame", "aviatorPlugin", { cmd: 100000, f: true }]));
-        }
-      }, 3000);
-      
-      setTimeout(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          console.log("📤 Gửi gói lấy lịch sử...");
-          ws.send(JSON.stringify([6, "MiniGame", "aviatorPlugin", { cmd: 100016 }]));
-        }
-      }, 4500);
+    // Chờ tiếp 1.5s mới gửi các gói khác để tránh dồn dập
+    await sleep(1500);
+    if (ws.readyState !== WebSocket.OPEN) return;
 
-    }, 500);
+    console.log("📤 Gửi gói LobbyPlugin...");
+    ws.send(JSON.stringify([6, "MiniGame", "lobbyPlugin", { cmd: 10002 }]));
+
+    await sleep(1000);
+    if (ws.readyState !== WebSocket.OPEN) return;
+
+    console.log("📤 Gửi gói AviatorPlugin...");
+    ws.send(JSON.stringify([6, "MiniGame", "aviatorPlugin", { cmd: 100000, f: true }]));
+
+    await sleep(1000);
+    if (ws.readyState !== WebSocket.OPEN) return;
+
+    console.log("📤 Gửi gói lấy lịch sử...");
+    ws.send(JSON.stringify([6, "MiniGame", "aviatorPlugin", { cmd: 100016 }]));
+
+    // Đánh dấu đã vào phòng thành công, bắt đầu cho phép KeepAlive
+    isAuthenticated = true;
+    reconnectAttempts = 0; // Kết nối thành công thì reset bộ đếm
+    console.log("✅ Đã gửi xong toàn bộ gói tin khởi tạo. Chuyển sang trạng thái nhận data.");
   });
 
   ws.on("message", (data) => {
@@ -93,77 +105,55 @@ function connectWebSocket() {
       const sid = payload.sid;
       const odd = payload.odd;
 
-      // Nhận data phiên
       if (cmd === 100009 && sid && typeof odd === "number") {
         if (!session_odds[sid]) session_odds[sid] = [];
         session_odds[sid].push(odd);
         last_odd_time[sid] = Date.now();
       }
-      
-      // Nếu có sự kiện pong từ server trả về (nếu có)
-      if (cmd === "pong") {
-        ws.isAlive = true;
-      }
     } catch (e) {
-      // Bỏ qua lỗi parse JSON
+      // Bỏ qua lỗi parse
     }
   });
 
   ws.on("close", (code, reason) => {
     isConnecting = false;
+    isAuthenticated = false;
     const reasonStr = reason ? reason.toString() : "Không có lý do";
     console.log(`🔌 WebSocket ngắt (Code: ${code}, Lý do: ${reasonStr}).`);
     
-    // SỬA LỖI 3: Nếu lỗi 1006, chờ lâu hơn một chút (5s) để tránh spam server đích
-    const delay = code === 1006 ? 5000 : 3000;
-    console.log(`⏳ Chờ ${delay / 1000}s để kết nối lại...`);
+    reconnectAttempts++;
+    // Nếu lỗi 1006 liên tục, tăng thời gian chờ (tối đa 30s) để tránh spam
+    const delay = Math.min(5000 * reconnectAttempts, 30000);
+    console.log(`⏳ Chờ ${delay / 1000}s để kết nối lại (Tránh spam IP)...`);
     
     if (reconnectTimeout) clearTimeout(reconnectTimeout);
     reconnectTimeout = setTimeout(connectWebSocket, delay);
   });
 
   ws.on("error", (err) => {
-    // Ẩn lỗi ECONNRESET để log đỡ rác
     if (err.code !== 'ECONNRESET') {
       console.log("❌ WebSocket lỗi:", err.message);
     }
   });
 }
 
-// 🕒 Interval kiểm tra kết nối sống/chết (Heartbeat nội bộ)
-// Thay vì dùng ws.ping() (dễ bị kick), ta kiểm tra bằng cờ isAlive
+// 📶 KeepAlive (Chỉ gửi khi ĐÃ XÁC THỰC THÀNH CÔNG)
 setInterval(() => {
-  if (!ws) return;
-  
-  if (ws.readyState === WebSocket.OPEN) {
-    // Nếu đã 35s không có tin nhắn nào (last_odd_time rỗng) => Server có thể đã treo
-    // Tuy nhiên ta ưu tiên dùng KeepAlive bằng JSON bên dưới.
-  } else if (ws.readyState === WebSocket.CLOSED) {
-    // Tự động gọi kết nối nếu bị đóng mà chưa có lệnh reconnect
-    if (!reconnectTimeout && !isConnecting) {
-      connectWebSocket();
-    }
-  }
-}, 15000);
-
-// 📶 KeepAlive (Gửi tin nhắn JSON chuẩn của game thay vì Ping/Pong TCP)
-setInterval(() => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (ws && ws.readyState === WebSocket.OPEN && isAuthenticated) {
     try {
       ws.send(JSON.stringify(["7", "MiniGame", "1", keep_alive_count++]));
-      console.log(`📶 KeepAlive JSON lần ${keep_alive_count} (Giữ kết nối)`);
+      console.log(`📶 KeepAlive JSON lần ${keep_alive_count}`);
     } catch (e) {
       console.log("❌ Lỗi gửi KeepAlive:", e.message);
     }
   }
-}, 10000); // 10 giây 1 lần
+}, 10000);
 
-// ⏱ Theo dõi phiên đã nổ (idle > 3s), log & lưu kết quả
+// ⏱ Theo dõi phiên đã nổ (idle > 2s)
 setInterval(() => {
   const now = Date.now();
   Object.keys(session_odds).forEach((sid) => {
-    // Nếu phiên không có data mới trong 3s => Máy bay đã nổ
-    if (!last_logged.has(sid) && now - (last_odd_time[sid] || 0) > 3000) {
+    if (!last_logged.has(sid) && now - (last_odd_time[sid] || 0) > 2000) {
       if (!session_odds[sid] || session_odds[sid].length === 0) return;
       
       const max_odd = Math.max(...session_odds[sid]);
@@ -179,11 +169,10 @@ setInterval(() => {
         id: "hknamvip"
       };
 
-      // Dọn dẹp bộ nhớ (Memory Leak)
+      // Dọn dẹp bộ nhớ
       delete session_odds[sid];
       delete last_odd_time[sid];
       
-      // Chỉ giữ lại 50 kết quả gần nhất
       const resultKeys = Object.keys(logged_results);
       if (resultKeys.length > 50) {
         const sortedKeys = resultKeys.map(Number).sort((a, b) => a - b);
@@ -195,9 +184,8 @@ setInterval(() => {
   });
 }, 1000);
 
-// 🛡 Anti-sleep (Chống Render tắt app sau 15 phút)
+// 🛡 Chống Render sleep
 setInterval(() => {
-  // Kiểm tra SELF_URL hợp lệ và bắt đầu bằng http (tránh localhost)
   if (SELF_URL && SELF_URL.startsWith("http") && !SELF_URL.includes("localhost")) {
     axios.get(`${SELF_URL}/api/latest`)
       .then(() => console.log("🛡 Anti-sleep: Đã tự ping giữ Render thức"))
@@ -214,19 +202,14 @@ app.get("/api/latest", (req, res) => {
 });
 
 app.get("/api/history", (req, res) => {
-  const sids = Object.keys(logged_results)
-    .map(Number)
-    .sort((a, b) => b - a)
-    .slice(0, 10);
-  const result = sids.map((sid) => logged_results[sid]);
-  res.json(result);
+  const sids = Object.keys(logged_results).map(Number).sort((a, b) => b - a).slice(0, 10);
+  res.json(sids.map((sid) => logged_results[sid]));
 });
 
 app.get("/", (req, res) => {
   res.json({
     status: "Aviator đang chạy",
-    ws_state: ws ? (ws.readyState === WebSocket.OPEN ? "Đã kết nối" : "Đang ngắt kết nối") : "Chưa khởi tạo",
-    tong_phien_dang_theo_doi: Object.keys(session_odds).length,
+    ws_state: ws ? (ws.readyState === WebSocket.OPEN ? (isAuthenticated ? "Đã kết nối & Xác thực" : "Đang xác thực...") : "Đang ngắt kết nối") : "Chưa khởi tạo",
     da_no: last_logged.size,
     memory: (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2) + " MB"
   });
@@ -234,7 +217,6 @@ app.get("/", (req, res) => {
 
 // Tắt server an toàn
 process.on('SIGTERM', () => {
-  console.log('⚠️ Nhận SIGTERM, đóng server...');
   if (ws) ws.close();
   if (reconnectTimeout) clearTimeout(reconnectTimeout);
   process.exit(0);
@@ -243,6 +225,5 @@ process.on('SIGTERM', () => {
 // 🚀 Start Server
 app.listen(PORT, () => {
   console.log(`🚀 Server đang chạy tại port ${PORT}`);
-  console.log(`🌐 SELF_URL: ${SELF_URL}`);
   connectWebSocket();
 });
